@@ -2,16 +2,17 @@ import boto3
 import pandas as pd
 from datetime import datetime, timedelta
 import numpy as np
+from creditCalculation import calculate_credits, plot_credits
 
 # instance type 종류
 instance_types = [
-    {"name": "t3.nano", "price": 0.0052, "vCPU": 2, "memory": "0.5GiB"},
-    {"name": "t3.micro", "price": 0.0104, "vCPU": 2, "memory": "1GiB"},
-    {"name": "t3.small", "price": 0.0208, "vCPU": 2, "memory": "2GiB"},
-    {"name": "t3.medium", "price": 0.0416, "vCPU": 2, "memory": "4GiB"},
-    {"name": "t3.large", "price": 0.0832, "vCPU": 2, "memory": "8GiB"},
-    {"name": "t3.xlarge", "price": 0.1664, "vCPU": 4, "memory": "16GiB"},
-    {"name": "t3.2xlarge", "price": 0.3328, "vCPU": 8, "memory": "32GiB"},
+    {"name": "t3.nano", "price": 0.0052, "vCPU": 2, "base_util": 0.05 ,"memory": "0.5GiB"},
+    {"name": "t3.micro", "price": 0.0104, "vCPU": 2,"base_util": 0.1, "memory": "1GiB"},
+    {"name": "t3.small", "price": 0.0208, "vCPU": 2,"base_util": 0.2, "memory": "2GiB"},
+    {"name": "t3.medium", "price": 0.0416, "vCPU": 2, "base_util": 0.2,"memory": "4GiB"},
+    {"name": "t3.large", "price": 0.0832, "vCPU": 2,"base_util": 0.3, "memory": "8GiB"},
+    {"name": "t3.xlarge", "price": 0.1664, "vCPU": 4,"base_util": 0.3, "memory": "16GiB"},
+    {"name": "t3.2xlarge", "price": 0.3328, "vCPU": 8, "base_util": 0.4,"memory": "32GiB"},
     {"name": "m4.large", "price": 0.10, "vCPU": 2, "memory": "8GiB"},
     {"name": "m4.xlarge", "price": 0.20, "vCPU": 4, "memory": "16GiB"},
     {"name": "m4.2xlarge", "price": 0.40, "vCPU": 8, "memory": "32GiB"},
@@ -32,7 +33,7 @@ instance_types = [
     {"name": "c4.2xlarge", "price": 0.398, "vCPU": 8, "memory": "15GiB"},
     {"name": "c4.4xlarge", "price": 0.796, "vCPU": 16, "memory": "30GiB"},
     {"name": "c4.8xlarge", "price": 1.591, "vCPU": 36, "memory": "60GiB"},
-     {"name": "c5.large", "price": 0.085, "vCPU": 2, "memory": "4GiB"},
+    {"name": "c5.large", "price": 0.085, "vCPU": 2, "memory": "4GiB"},
     {"name": "c5.xlarge", "price": 0.17, "vCPU": 4, "memory": "8GiB"},
     {"name": "c5.2xlarge", "price": 0.34, "vCPU": 8, "memory": "16GiB"},
     {"name": "c5.4xlarge", "price": 0.68, "vCPU": 16, "memory": "32GiB"},
@@ -60,17 +61,28 @@ TBurst60 = 'i-02f3ef08150c73e1e'
 MBurst60 = 'i-0d61dff2661abad07'
 MBurst30 = 'i-09988a775d697dcde'
 CHigh = 'i-0fc716d3ce6f6c16e'
-instance_id = CHigh
+THigh = 'i-0831c9d3766acca22'
+MLow = 'i-0d6e4de2088feae6e'
 
- # 인스턴스 정보 가져오기
+# 테스트 Instance 선택
+instance_id = MLow
+
+# 인스턴스 정보 가져오기
 ec2 = boto3.resource('ec2')
 instance = ec2.Instance(instance_id)
 instance_type = instance.instance_type
+instance_name = ""
+for tag in instance.tags:
+    if tag['Key'] == 'Name':
+        instance_name = tag['Value']
+        break
+
 
 print("####################################")
 print(instance_type)
 print("####################################")
 
+# Instance Data 5분 단위로 가져오기
 def get_metric_data(metric_name, namespace):
     response = cloudwatch.get_metric_statistics(
         Namespace=namespace,
@@ -100,8 +112,8 @@ for metric in metrics:
         namespace = 'CWAgent'
     data[metric] = get_metric_data(metric, namespace)
 
-import numpy as np
 
+# peak 횟수 & 지속 시간 
 def count_peaks_and_duration(data, threshold, metric_name):
     over_threshold = data[metric_name]['Average'] > threshold
     changes = over_threshold.ne(over_threshold.shift())
@@ -110,7 +122,7 @@ def count_peaks_and_duration(data, threshold, metric_name):
 
     if len(peaks_start) == 0 or len(peaks_end) == 0:
         print(f"{metric_name}에서 피크를 찾을 수 없습니다.")
-        return
+        return 0
 
     if peaks_start[0] > peaks_end[0]:  # 첫 번째 피크 종료 시간이 첫 번째 피크 시작 시간보다 먼저인 경우
         peaks_end = peaks_end[1:]
@@ -133,88 +145,108 @@ def count_peaks_and_duration(data, threshold, metric_name):
     print(f"{metric_name}에서 각 피크의 평균 지속 시간: {durations_in_seconds.mean()} 초")
     print(f"{metric_name}에서 피크 기간 동안의 CPU 활용률 평균: {np.mean(peak_cpu_utilization_means)}")
     print(f"{metric_name}에서 피크 기간 동안의 CPU 활용률 최대값: {max(peak_cpu_utilization_max)}")
-    return len(peaks_start)
-
-#count_peaks_and_duration(data, 40, 'CPUUtilization')
-
+    
+    return len(peaks_start) # peak 갯수 return 
 
 
+# 인스턴스 성능에 맞는 t type 가져오기 (not used)
+def get_vcpu_and_baseline(instance):
+     # 현재 인스턴스의 정보를 가져옴
+    current_instance = None
+    for instance in instance_types:
+        if instance['name'] == instance_type:
+            current_instance = instance
+            break
 
-def count_zero_credit_balance_periods(data, metric_name):
-    zero_balance = (data[metric_name]['Average'] == 0)
-    changes = zero_balance.ne(zero_balance.shift())
-    zero_start = data[metric_name][changes & zero_balance].index
-    non_zero_after_zero = data[metric_name][changes & ~zero_balance].index
+    # 현재 인스턴스의 정보를 찾지 못한 경우
+    if current_instance is None:
+        return None, None
 
-    if len(zero_start) == 0:
-        print(f"{metric_name}에서 0 잔액 기간을 찾을 수 없습니다.")
-        return
+    # 't'로 시작하는 인스턴스 중에서 vCPU 수가 같은 인스턴스를 찾음
+    for instance in instance_types:
+        if instance['name'].startswith('t') and instance['vCPU'] == current_instance['vCPU']:
+            return instance['vCPU'], instance['base_util']
 
-    if len(non_zero_after_zero) > 0 and zero_start[0] > non_zero_after_zero[0]:  # 첫 번째 0 잔액 종료 시간이 첫 번째 0 잔액 시작 시간보다 먼저인 경우
-        non_zero_after_zero = non_zero_after_zero[1:]
-
-    if len(zero_start) > len(non_zero_after_zero):  # 마지막 0 잔액 기간이 종료되지 않은 경우
-        non_zero_after_zero = non_zero_after_zero.append(pd.Index([pd.Timestamp.now(tz='UTC')]))
-
-    durations = non_zero_after_zero - zero_start
-    durations_in_seconds = np.array([duration.total_seconds() for duration in durations])
-
-    print(f"{metric_name}에서 0 잔액 기간 수: {len(zero_start)}")
-    for i, duration in enumerate(durations_in_seconds, start=1):
-        print(f"0 잔액 기간 {i}: {duration} 초")
-
-# 인스턴스 타입이 't'로 시작하는 경우에만 함수 호출
-if instance_type.startswith('t'):
-    count_zero_credit_balance_periods(data, 'CPUCreditBalance')
+    return None, None
 
 # Overprovisioning, UnderProvisioning, Optimized 상태 판단
 def check_provisioning_status(data):
     cpu_avg = data['CPUUtilization']['Average'].mean()
     memory_avg = data['mem_used_percent']['Average'].mean()
-    if instance_type.startswith('t'):
-        credit_avg = data['CPUCreditBalance']['Average'].mean()
-    else:
-        credit_avg = 100
     print('Average CPU Utilization:', cpu_avg)
     print('Average Memory Used Percent:', memory_avg)
-    print('Average CPU Credit Balance:', credit_avg)
-    peak_num = count_peaks_and_duration(data, 40, 'CPUUtilization')
-
-    if cpu_avg < 30 and memory_avg < 30: # CPU와 메모리 사용률이 각각 30% 미만인 경우
-        if peak_num <= 2:
-            no_peaks_type_recommend(cpu_avg,memory_avg)
-        return 'Overprovisioning'
-    elif cpu_avg > 70 or memory_avg > 70 or credit_avg < 30: # CPU 또는 메모리 사용률이 70% 초과, 또는 CPU Credit Balance가 30 미만인 경우
-        if peak_num <= 2:
-            no_peaks_type_recommend(cpu_avg,memory_avg)
-        return 'UnderProvisioning'
-    else:
-        return 'Optimized'
-
-def no_peaks_type_recommend(cpu_avg,memory_avg):
+    # 필요한 vCPU 수 
     target_cpu_usage = 50
-    # 필요한 vCPU 수 계산
     required_vcpus = 2 * (cpu_avg / target_cpu_usage)
 
-    # 'm'과 'c' 유형 각각에서 필요한 vCPU 수 이상을 제공하고 가장 가격이 낮은 인스턴스 선택
-    selected_instance_m = min((i for i in instance_types if i['name'].startswith('m') and i['vCPU'] >= required_vcpus), key=lambda x: x['price'])
-    selected_instance_c = min((i for i in instance_types if i['name'].startswith('c') and i['vCPU'] >= required_vcpus), key=lambda x: x['price'])
-    selected_instance_t = min((i for i in instance_types if i['name'].startswith('t') and i['vCPU'] >= required_vcpus), key=lambda x: x['price'])
+    if instance_type.startswith('t'):
+        credit_avg = data['CPUCreditBalance']['Average'].mean()
+        print('Average CPU Credit Balance:', credit_avg)
+
+    recommand_type = None
+    peak_num = count_peaks_and_duration(data, 40, 'CPUUtilization')
 
 
-    print("-------------------")
-    print(f"required_vcpus: {required_vcpus}")
-    # 선택된 인스턴스 유형과 요금 출력
-    print(f"Instance Type: {selected_instance_m['name']}")
-    print(f"Price: ${selected_instance_m['price']} per hour")
-    print("-------------------")
-    print(f"Instance Type: {selected_instance_c['name']}")
-    print(f"Price: ${selected_instance_c['price']} per hour")
-    print("-------------------")
-    print(f"Instance Type: {selected_instance_t['name']}")
-    print(f"Price: ${selected_instance_t['price']} per hour")
-    print("-------------------")
+    
+    cpu_usage_values = data['CPUUtilization']['Average'].tolist()
+
+    # t type 이 다른 type 보다 저렴하므로 항상 고려
+    # 't'로 시작하는 인스턴스 타입들을 순회
+    for instance in filter(lambda i: i['name'].startswith('t'), instance_types):
+        vcpu_count, baseline_utilization = instance['vCPU'], instance['base_util']
+        
+        # 필요한 CPU를 충족시키지 못하면 다음 't' 타입 인스턴스로 넘어감
+        if vcpu_count < required_vcpus:
+            continue
+        # 크레딧 계산
+        credits = calculate_credits(cpu_usage_values, vcpu_count, baseline_utilization)
+
+        # 크레딧이 0 이하면 다음 인스턴스 타입으로 넘어감
+        if credits is None:
+            continue
+        
+        # 크레딧 시각화
+        t_recommand_type = instance['name']
+        plot_credits(credits, instance_name)
+        break
+
+     # 't' type 인스턴스 가격
+    t_price = next(i for i in instance_types if i['name'] == t_recommand_type)['price']
+
+    # 'm' 또는 'c' 타입 인스턴스 추천 받기
+    recommand_type, recommand_price = recommend_instance_type(required_vcpus)
+
+    # 't' type 인스턴스가 더 비싸면 'm' 또는 'c' 타입 인스턴스를 추천
+    if t_price > recommand_price:
+        recommand_type = recommand_type
+    else:
+        recommand_type = t_recommand_type
+
+     # 현재 인스턴스 타입의 가격 (시간당)
+    current_price = next(i for i in instance_types if i['name'] == instance_type)['price']
+     # 추천 인스턴스 타입의 가격 (시간당)
+    recommand_price = next(i for i in instance_types if i['name'] == recommand_type)['price']
+
+    # 현재 인스턴스 타입과 추천 인스턴스 타입의 하루 비용 계산 및 출력
+    current_daily_cost = current_price * 24
+    recommand_daily_cost = recommand_price * 24
+    print('--------------------------------')
+    print('Recommend Type:', recommand_type)
+    print(f'Current daily cost: ${current_daily_cost}')
+    print(f'Recommended daily cost: ${recommand_daily_cost}')
+    return
+    
+
+def recommend_instance_type(required_vcpus):
+    instance_candidates = []
+    instance_types_to_consider = ['m', 'c']
+
+    for instance_type in instance_types_to_consider:
+        instance_candidates.append(min((i for i in instance_types if i['name'].startswith(instance_type) and i['vCPU'] >= required_vcpus), key=lambda x: x['price']))
+    
+    selected_instance = min(instance_candidates, key=lambda x: x['price'])
+    return selected_instance['name'], selected_instance['price']
+
 
 status = check_provisioning_status(data)
-print('Provisioning Status:', status)
 
