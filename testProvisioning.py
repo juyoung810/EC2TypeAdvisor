@@ -60,7 +60,7 @@ TBurst60 = 'i-02f3ef08150c73e1e'
 MBurst60 = 'i-0d61dff2661abad07'
 MBurst30 = 'i-09988a775d697dcde'
 CHigh = 'i-0fc716d3ce6f6c16e'
-instance_id = TBurst30
+instance_id = CHigh
 
  # 인스턴스 정보 가져오기
 ec2 = boto3.resource('ec2')
@@ -133,8 +133,9 @@ def count_peaks_and_duration(data, threshold, metric_name):
     print(f"{metric_name}에서 각 피크의 평균 지속 시간: {durations_in_seconds.mean()} 초")
     print(f"{metric_name}에서 피크 기간 동안의 CPU 활용률 평균: {np.mean(peak_cpu_utilization_means)}")
     print(f"{metric_name}에서 피크 기간 동안의 CPU 활용률 최대값: {max(peak_cpu_utilization_max)}")
+    return len(peaks_start)
 
-count_peaks_and_duration(data, 40, 'CPUUtilization')
+#count_peaks_and_duration(data, 40, 'CPUUtilization')
 
 
 
@@ -177,13 +178,43 @@ def check_provisioning_status(data):
     print('Average CPU Utilization:', cpu_avg)
     print('Average Memory Used Percent:', memory_avg)
     print('Average CPU Credit Balance:', credit_avg)
+    peak_num = count_peaks_and_duration(data, 40, 'CPUUtilization')
 
     if cpu_avg < 30 and memory_avg < 30: # CPU와 메모리 사용률이 각각 30% 미만인 경우
+        if peak_num <= 2:
+            no_peaks_type_recommend(cpu_avg,memory_avg)
         return 'Overprovisioning'
     elif cpu_avg > 70 or memory_avg > 70 or credit_avg < 30: # CPU 또는 메모리 사용률이 70% 초과, 또는 CPU Credit Balance가 30 미만인 경우
+        if peak_num <= 2:
+            no_peaks_type_recommend(cpu_avg,memory_avg)
         return 'UnderProvisioning'
     else:
         return 'Optimized'
 
+def no_peaks_type_recommend(cpu_avg,memory_avg):
+    target_cpu_usage = 50
+    # 필요한 vCPU 수 계산
+    required_vcpus = 2 * (cpu_avg / target_cpu_usage)
+
+    # 'm'과 'c' 유형 각각에서 필요한 vCPU 수 이상을 제공하고 가장 가격이 낮은 인스턴스 선택
+    selected_instance_m = min((i for i in instance_types if i['name'].startswith('m') and i['vCPU'] >= required_vcpus), key=lambda x: x['price'])
+    selected_instance_c = min((i for i in instance_types if i['name'].startswith('c') and i['vCPU'] >= required_vcpus), key=lambda x: x['price'])
+    selected_instance_t = min((i for i in instance_types if i['name'].startswith('t') and i['vCPU'] >= required_vcpus), key=lambda x: x['price'])
+
+
+    print("-------------------")
+    print(f"required_vcpus: {required_vcpus}")
+    # 선택된 인스턴스 유형과 요금 출력
+    print(f"Instance Type: {selected_instance_m['name']}")
+    print(f"Price: ${selected_instance_m['price']} per hour")
+    print("-------------------")
+    print(f"Instance Type: {selected_instance_c['name']}")
+    print(f"Price: ${selected_instance_c['price']} per hour")
+    print("-------------------")
+    print(f"Instance Type: {selected_instance_t['name']}")
+    print(f"Price: ${selected_instance_t['price']} per hour")
+    print("-------------------")
+
 status = check_provisioning_status(data)
 print('Provisioning Status:', status)
+
