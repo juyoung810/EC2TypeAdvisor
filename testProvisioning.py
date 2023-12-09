@@ -3,6 +3,47 @@ import pandas as pd
 from datetime import datetime, timedelta
 import numpy as np
 
+# instance type 종류
+instance_types = [
+    {"name": "t3.nano", "price": 0.0052, "vCPU": 2, "memory": "0.5GiB"},
+    {"name": "t3.micro", "price": 0.0104, "vCPU": 2, "memory": "1GiB"},
+    {"name": "t3.small", "price": 0.0208, "vCPU": 2, "memory": "2GiB"},
+    {"name": "t3.medium", "price": 0.0416, "vCPU": 2, "memory": "4GiB"},
+    {"name": "t3.large", "price": 0.0832, "vCPU": 2, "memory": "8GiB"},
+    {"name": "t3.xlarge", "price": 0.1664, "vCPU": 4, "memory": "16GiB"},
+    {"name": "t3.2xlarge", "price": 0.3328, "vCPU": 8, "memory": "32GiB"},
+    {"name": "m4.large", "price": 0.10, "vCPU": 2, "memory": "8GiB"},
+    {"name": "m4.xlarge", "price": 0.20, "vCPU": 4, "memory": "16GiB"},
+    {"name": "m4.2xlarge", "price": 0.40, "vCPU": 8, "memory": "32GiB"},
+    {"name": "m4.4xlarge", "price": 0.80, "vCPU": 16, "memory": "64GiB"},
+    {"name": "m4.10xlarge", "price": 2.00, "vCPU": 40, "memory": "160GiB"},
+    {"name": "m4.16xlarge", "price": 3.20, "vCPU": 64, "memory": "256GiB"},
+    {"name": "m5.large", "price": 0.096, "vCPU": 2, "memory": "8GiB"},
+    {"name": "m5.xlarge", "price": 0.192, "vCPU": 4, "memory": "16GiB"},
+    {"name": "m5.2xlarge", "price": 0.384, "vCPU": 8, "memory": "32GiB"},
+    {"name": "m5.4xlarge", "price": 0.768, "vCPU": 16, "memory": "64GiB"},
+    {"name": "m5.8xlarge", "price": 1.536, "vCPU": 32, "memory": "128GiB"},
+    {"name": "m5.12xlarge", "price": 2.304, "vCPU": 48, "memory": "192GiB"},
+    {"name": "m5.16xlarge", "price": 3.072, "vCPU": 64, "memory": "256GiB"},
+    {"name": "m5.24xlarge", "price": 4.608, "vCPU": 96, "memory": "384GiB"},
+    {"name": "m5.metal", "price": 4.608, "vCPU": 96, "memory": "384GiB"},
+    {"name": "c4.large", "price": 0.10, "vCPU": 2, "memory": "3.75GiB"}, 
+    {"name": "c4.xlarge", "price": 0.199, "vCPU": 4, "memory": "7.5GiB"},
+    {"name": "c4.2xlarge", "price": 0.398, "vCPU": 8, "memory": "15GiB"},
+    {"name": "c4.4xlarge", "price": 0.796, "vCPU": 16, "memory": "30GiB"},
+    {"name": "c4.8xlarge", "price": 1.591, "vCPU": 36, "memory": "60GiB"},
+     {"name": "c5.large", "price": 0.085, "vCPU": 2, "memory": "4GiB"},
+    {"name": "c5.xlarge", "price": 0.17, "vCPU": 4, "memory": "8GiB"},
+    {"name": "c5.2xlarge", "price": 0.34, "vCPU": 8, "memory": "16GiB"},
+    {"name": "c5.4xlarge", "price": 0.68, "vCPU": 16, "memory": "32GiB"},
+    {"name": "c5.9xlarge", "price": 1.53, "vCPU": 36, "memory": "72GiB"},
+    {"name": "c5.12xlarge", "price": 2.04, "vCPU": 48, "memory": "96GiB"},
+    {"name": "c5.18xlarge", "price": 3.06, "vCPU": 72, "memory": "144GiB"},
+    {"name": "c5.24xlarge", "price": 4.08, "vCPU": 96, "memory": "192GiB"},
+    {"name": "c5.metal", "price": 4.08, "vCPU": 96, "memory": "192GiB"},
+]
+
+
 # CloudWatch 클라이언트 생성
 cloudwatch = boto3.client('cloudwatch')
 
@@ -11,6 +52,7 @@ end_time = datetime.utcnow()
 start_time = end_time - timedelta(days=1)
 
 metrics = ['CPUUtilization', 'CPUCreditBalance', 'CPUCreditUsage', 'mem_used_percent']
+
 
 # Instance ID
 TBurst30 = 'i-0a9b8f7f0264a8f2b'
