@@ -12,7 +12,8 @@ def build_slack_message(data):
     execute_time = to_yyyymmddhhmmss(data['StateChangeTime'])
     description = data['AlarmDescription']
     instance_id = data['Trigger']['Dimensions'][0]['value']
-
+    
+    
     region_map = {
         "US East (Ohio)": "us-east-2",
         "US East (N. Virginia)": "us-east-1",
@@ -58,7 +59,7 @@ def to_yyyymmddhhmmss(time_string):
 
     kst_date = datetime.datetime.strptime(time_string, "%Y-%m-%dT%H:%M:%S.%f%z") + datetime.timedelta(hours=9)
     return kst_date.strftime("%Y-%m-%d %H:%M:%S")
-    
+
 def post_slack(message, slack_url):
     response = requests.post(slack_url, headers={'Content-Type': 'application/json'}, data=json.dumps(message))
     return response.text
