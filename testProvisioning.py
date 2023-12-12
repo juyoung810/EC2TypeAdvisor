@@ -217,7 +217,7 @@ def recommend_instance_type(required_vcpus):
 
 
 def send_to_slack(server):
-    webhook_url = "https://hooks.slack.com/services/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"
+    webhook_url = os.environment["SLACK_WEBHOOK_URL"]
     image_url = f"https://eta-credit-balance-graph.s3.us-east-2.amazonaws.com/{datetime.today().strftime('%Y-%m-%d')}/{server['name']}_{server['type']}.png"
 
 
