@@ -2,8 +2,9 @@ import boto3
 import pandas as pd
 from datetime import datetime, timedelta
 import numpy as np
+import requests
+import json
 from creditCalculation import calculate_credits, plot_credits
-
 # instance type 종류
 instance_types = [
     {"name": "t3.nano", "price": 0.0052, "vCPU": 2, "base_util": 0.05 ,"memory": "0.5GiB"},
@@ -44,7 +45,6 @@ instance_types = [
     {"name": "c5.metal", "price": 4.08, "vCPU": 96, "memory": "192GiB"},
 ]
 
-
 # CloudWatch 클라이언트 생성
 cloudwatch = boto3.client('cloudwatch')
 
@@ -54,34 +54,21 @@ start_time = end_time - timedelta(days=1)
 
 metrics = ['CPUUtilization', 'CPUCreditBalance', 'CPUCreditUsage', 'mem_used_percent']
 
+# 모든 인스턴스 가져오기
+ec2 = boto3.client('ec2')
+response = ec2.describe_instances()
 
-# Instance ID
-TBurst30 = 'i-0a9b8f7f0264a8f2b'
-TBurst60 = 'i-02f3ef08150c73e1e'
-MBurst60 = 'i-0d61dff2661abad07'
-MBurst30 = 'i-09988a775d697dcde'
-CHigh = 'i-0fc716d3ce6f6c16e'
-THigh = 'i-0831c9d3766acca22'
-MLow = 'i-0d6e4de2088feae6e'
+# 'eta-'로 시작하는 인스턴스 ID 목록 생성
+eta_instance_ids = []
+for reservation in response["Reservations"]:
+    for instance in reservation["Instances"]:
+        instance_id = instance["InstanceId"]
+        for tag in instance["Tags"]:
+            if tag["Key"] == "Name" and tag["Value"].startswith("eta-"):
+                eta_instance_ids.append(instance_id)
 
-# 테스트 Instance 선택
-instance_id = MLow
-
-# 인스턴스 정보 가져오기
-ec2 = boto3.resource('ec2')
-instance = ec2.Instance(instance_id)
-instance_type = instance.instance_type
-instance_name = ""
-for tag in instance.tags:
-    if tag['Key'] == 'Name':
-        instance_name = tag['Value']
-        break
-
-
-print("####################################")
-print(instance_type)
-print("####################################")
-
+# 서버 정보를 저장할 리스트
+servers = []
 # Instance Data 5분 단위로 가져오기
 def get_metric_data(metric_name, namespace):
     response = cloudwatch.get_metric_statistics(
@@ -104,14 +91,6 @@ def get_metric_data(metric_name, namespace):
         return pd.DataFrame()
     return pd.DataFrame(response['Datapoints']).set_index('Timestamp').sort_index()
 
-data = {}
-for metric in metrics:
-    if metric in ['CPUUtilization', 'CPUCreditBalance', 'CPUCreditUsage']:
-        namespace = 'AWS/EC2'
-    else:
-        namespace = 'CWAgent'
-    data[metric] = get_metric_data(metric, namespace)
-
 
 # peak 횟수 & 지속 시간 
 def count_peaks_and_duration(data, threshold, metric_name):
@@ -122,7 +101,7 @@ def count_peaks_and_duration(data, threshold, metric_name):
 
     if len(peaks_start) == 0 or len(peaks_end) == 0:
         print(f"{metric_name}에서 피크를 찾을 수 없습니다.")
-        return 0
+        return 0,0,0,0
 
     if peaks_start[0] > peaks_end[0]:  # 첫 번째 피크 종료 시간이 첫 번째 피크 시작 시간보다 먼저인 경우
         peaks_end = peaks_end[1:]
@@ -141,50 +120,28 @@ def count_peaks_and_duration(data, threshold, metric_name):
         peak_cpu_utilization_means.append(peak_data['Average'].mean())
         peak_cpu_utilization_max.append(peak_data['Average'].max())
 
-    print(f"{metric_name}에서 피크 수: {len(peaks_start)}")
-    print(f"{metric_name}에서 각 피크의 평균 지속 시간: {durations_in_seconds.mean()} 초")
-    print(f"{metric_name}에서 피크 기간 동안의 CPU 활용률 평균: {np.mean(peak_cpu_utilization_means)}")
-    print(f"{metric_name}에서 피크 기간 동안의 CPU 활용률 최대값: {max(peak_cpu_utilization_max)}")
     
-    return len(peaks_start) # peak 갯수 return 
-
-
-# 인스턴스 성능에 맞는 t type 가져오기 (not used)
-def get_vcpu_and_baseline(instance):
-     # 현재 인스턴스의 정보를 가져옴
-    current_instance = None
-    for instance in instance_types:
-        if instance['name'] == instance_type:
-            current_instance = instance
-            break
-
-    # 현재 인스턴스의 정보를 찾지 못한 경우
-    if current_instance is None:
-        return None, None
-
-    # 't'로 시작하는 인스턴스 중에서 vCPU 수가 같은 인스턴스를 찾음
-    for instance in instance_types:
-        if instance['name'].startswith('t') and instance['vCPU'] == current_instance['vCPU']:
-            return instance['vCPU'], instance['base_util']
-
-    return None, None
+    return len(peaks_start), durations_in_seconds.mean(),np.mean(peak_cpu_utilization_means),max(peak_cpu_utilization_max) # peak 갯수 return 
 
 # Overprovisioning, UnderProvisioning, Optimized 상태 판단
 def check_provisioning_status(data):
     cpu_avg = data['CPUUtilization']['Average'].mean()
-    memory_avg = data['mem_used_percent']['Average'].mean()
-    print('Average CPU Utilization:', cpu_avg)
-    print('Average Memory Used Percent:', memory_avg)
+    # memory agent 설치 안한 경우 
+    try:
+        memory_avg = data['mem_used_percent']['Average'].mean()
+    except (KeyError, AttributeError):
+        memory_avg = 25
+    
+
     # 필요한 vCPU 수 
     target_cpu_usage = 50
     required_vcpus = 2 * (cpu_avg / target_cpu_usage)
 
     if instance_type.startswith('t'):
         credit_avg = data['CPUCreditBalance']['Average'].mean()
-        print('Average CPU Credit Balance:', credit_avg)
 
     recommand_type = None
-    peak_num = count_peaks_and_duration(data, 40, 'CPUUtilization')
+    peak_num ,avg_duration,avg_cpu_usage_peak,max_cpu_usage_peak = count_peaks_and_duration(data, 40, 'CPUUtilization')
 
 
     
@@ -207,7 +164,7 @@ def check_provisioning_status(data):
         
         # 크레딧 시각화
         t_recommand_type = instance['name']
-        plot_credits(credits, instance_name)
+        plot_credits(credits, instance_name,instance_type)
         break
 
      # 't' type 인스턴스 가격
@@ -230,11 +187,22 @@ def check_provisioning_status(data):
     # 현재 인스턴스 타입과 추천 인스턴스 타입의 하루 비용 계산 및 출력
     current_daily_cost = current_price * 24
     recommand_daily_cost = recommand_price * 24
-    print('--------------------------------')
-    print('Recommend Type:', recommand_type)
-    print(f'Current daily cost: ${current_daily_cost}')
-    print(f'Recommended daily cost: ${recommand_daily_cost}')
-    return
+
+    server_info = {
+        'name': instance_name,
+        'type' : instance_type,
+        'cpu': round(cpu_avg, 3),
+        'memory': round(memory_avg, 3),
+        'credit': round(credit_avg, 3) if instance_type.startswith('t') else "N/A",
+        'peak_num': peak_num,
+        'avg_duration': round(avg_duration, 3) if instance_type.startswith('t') else "N/A",
+        'avg_cpu_usage_peak': round(avg_cpu_usage_peak, 3) if instance_type.startswith('t') else "N/A",
+        'max_cpu_usage_peak': round(max_cpu_usage_peak, 3) if instance_type.startswith('t') else "N/A",
+        'recommended_type': recommand_type,
+        'current_cost': round(current_daily_cost, 3),
+        'recommended_cost': round(recommand_daily_cost, 3)
+    } 
+    return server_info
     
 
 def recommend_instance_type(required_vcpus):
@@ -248,5 +216,77 @@ def recommend_instance_type(required_vcpus):
     return selected_instance['name'], selected_instance['price']
 
 
-status = check_provisioning_status(data)
+def send_to_slack(server):
+    webhook_url = "https://hooks.slack.com/services/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"
+    image_url = f"https://eta-credit-balance-graph.s3.us-east-2.amazonaws.com/{datetime.today().strftime('%Y-%m-%d')}/{server['name']}_{server['type']}.png"
 
+
+    # 메시지 생성
+    message = f"안녕하세요! :wave: \n *{server['type']} type의 {server['name']}* 서버의 성능 리포트를 전해드릴게요:mag_right:\n\n"
+    message += ":cloud: *현재 CPU 사용량*\n"
+    server_message = f" - 평균 CPU 사용률: {server['cpu']}%\n - 평균 메모리 사용률: {server['memory']}%\n"
+
+
+    if server['type'].startswith('t'):
+        server_message += f" - CPU 크레딧 밸런스: {server['credit']}\n"
+
+    if server['peak_num'] > 0:
+        server_message += f":cloud: *T type Peak 분석*\n - 피크 수: {server['peak_num']}\n - 평균 피크 지속시간: {server['avg_duration']}s\n - 피크 기간 동안 CPU 평균 활용률: {server['avg_cpu_usage_peak']}%\n - 피크 기간 동안 CPU 최대 활용률: {server['max_cpu_usage_peak']}%\n"
+    else:
+        server_message += ":cloud: 피크가 존재하지 않습니다.\n"
+
+    server_message += ":rocket: *사용량을 기반으로 EC2 type 을 추천합니다*\n"
+    server_message += f" - 추천 서버 타입: {server['recommended_type']}\n - 현재 일일 비용: ${server['current_cost']}\n - 추천된 일일 비용: ${server['recommended_cost']}\n - 한 시간당 절감될 비용: ${server['current_cost'] - server['recommended_cost']}\n"
+
+    if server['recommended_type'].startswith('t'):
+        image_url = f"https://eta-credit-balance-graph.s3.us-east-2.amazonaws.com/{datetime.today().strftime('%Y-%m-%d')}/{server['name']}_{server['type']}.png"
+        server_message += f"\n*추천된 서버의 예상 CreditBalance 사용량 그래프*\n"
+        server_message += f"{image_url}"
+
+
+    message += server_message
+
+    message += "\n잘못된 점이나 개선할 사항이 있다면 언제든지 알려주세요!"
+
+    # Slack으로 메시지 전송
+    slack_data = {
+    'attachments': [
+        {
+            'fallback': 'Required plain-text summary of the attachment.',
+            'color': '#FF9900',  # 색상 바의 색상을 설정합니다. 이는 HEX 코드를 사용합니다.
+            'text': message  # 이 텍스트가 색상 바 옆에 표시됩니다.
+        }
+    ]
+    }
+    response = requests.post(
+        webhook_url, data=json.dumps(slack_data),
+        headers={'Content-Type': 'application/json'}
+    )
+    if response.status_code != 200:
+        raise ValueError(
+            'Request to slack returned an error %s, the response is:%s' % (response.status_code, response.text)
+        )
+
+for instance_id in eta_instance_ids:
+    # 인스턴스 정보 가져오기
+    ec2 = boto3.resource('ec2')
+    instance = ec2.Instance(instance_id)
+    instance_type = instance.instance_type
+    instance_name = ""
+    for tag in instance.tags:
+        if tag['Key'] == 'Name':
+            instance_name = tag['Value']
+            break
+
+    # cloudwatch 데이터 요청
+    data = {}
+    for metric in metrics:
+        if metric in ['CPUUtilization', 'CPUCreditBalance', 'CPUCreditUsage']:
+            namespace = 'AWS/EC2'
+        else:
+            namespace = 'CWAgent'
+        data[metric] = get_metric_data(metric, namespace)
+
+    server_info = check_provisioning_status(data)
+    if server_info is not None:
+        send_to_slack(server_info)  
